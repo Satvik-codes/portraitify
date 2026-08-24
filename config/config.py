@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PORT = int(os.environ.get("PORT", "8000"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "25"))
 FORCE_CPU = os.environ.get("FORCE_CPU", "false").lower() == "true"
+FORCE_FP16 = os.environ.get("FORCE_FP16", "false").lower() == "true"
 KEEP_DEBUG = os.environ.get("KEEP_DEBUG", "false").lower() == "true"
 
 # --- Model weight paths -----------------------------------------------------
@@ -35,7 +36,7 @@ CANVAS_SIZES = {
     "1:1": (1080, 1080),
 }
 VALID_RATIOS = tuple(CANVAS_SIZES.keys())
-VALID_TIERS = ("fast", "quality")
+VALID_TIERS = ("auto", "fast", "quality", "sdturbo", "relayout")
 VALID_ALIGNS = ("auto", "top", "center", "bottom")
 
 # --- Pipeline tuning ---------------------------------------------------------

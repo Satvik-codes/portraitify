@@ -37,7 +37,7 @@ class Job:
             return {
                 "job_id": self.id, "status": self.status, "stage": self.stage,
                 "progress": self.progress, "params": self.params,
-                "error": self.error,
+                "error": self.error, "meta": self.meta,
                 "result_url": f"/api/results/{self.id}" if self.status == "done" else None,
                 "original_url": f"/api/uploads/{self.id}",
             }
@@ -129,7 +129,7 @@ class JobManager:
                 self._execute(job)
 
     def _execute(self, job: Job):
-        from pipeline import run as pipeline_run
+        from pipeline import run as pipeline_run, run_smart
 
         def cb(stage, pct):
             job.set(stage=stage, progress=pct)
@@ -141,10 +141,15 @@ class JobManager:
             job.set(status="running")
             self._persist(job)
             img = _load_upload(config.UPLOADS_DIR / f"{job.id}.bin")
-            meta = pipeline_run(img, ratio=job.params["ratio"],
-                                tier=job.params["tier"],
-                                align=job.params["align"],
-                                job_id=job.id, cb=cb)
+            if job.params["tier"] == "auto":
+                meta = run_smart(img, ratio=job.params["ratio"],
+                                 align=job.params["align"],
+                                 job_id=job.id, cb=cb)
+            else:
+                meta = pipeline_run(img, ratio=job.params["ratio"],
+                                    tier=job.params["tier"],
+                                    align=job.params["align"],
+                                    job_id=job.id, cb=cb)
             if not tmp_result.exists():
                 raise IOError("pipeline reported success but result file missing")
             job.meta = {k: v for k, v in meta.items() if k != "result_path"}

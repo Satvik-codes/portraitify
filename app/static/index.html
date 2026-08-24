@@ -87,8 +87,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px}
   </div>
   <label class="small" style="margin-top:16px">Quality tier</label>
   <div class="tiers">
-    <div class="tier on" data-tier="fast"><h3>Fast · texture continuation</h3><span>LaMa · ~15 s</span></div>
-    <div class="tier" data-tier="quality"><h3>Quality · semantic scene fill</h3><span>PowerPaint-V2 · ~90 s</span></div>
+    <div class="tier on" data-tier="auto"><h3>Auto · no voids, ever</h3><span>picks the engine per image</span></div>
+    <div class="tier" data-tier="fast"><h3>Fast · texture</h3><span>LaMa · ~15 s</span></div>
+    <div class="tier" data-tier="quality"><h3>Quality · semantic</h3><span>PowerPaint-V2 · ~90 s</span></div>
   </div>
   <button id="go" disabled>Convert → 9:16</button>
   <div id="barWrap"><div id="bar"></div></div>
@@ -192,7 +193,8 @@ function poll(id,n){
       const j=await r.json();
       setBar(Math.max(3,j.progress),j.stage?j.stage+"…":j.status);
       if(j.status==="done"){
-        setBar(100,"done in one piece ✨");showResult(j);return;
+        const chain=(j.meta&&j.meta.engine_chain)?(" · engine: "+j.meta.engine_chain.map(c=>c[0]).join("→")):"";
+        setBar(100,"done ✨"+chain);showResult(j);return;
       }
       if(j.status==="failed")return fail(j.error||"unknown failure");
       poll(id,n+1);
