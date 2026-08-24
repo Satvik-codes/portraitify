@@ -49,7 +49,9 @@ def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
 
     # ---- fill ---------------------------------------------------------------
     cb("filling", 70); t = time.time()
+    from pipeline import prefill
     if tier == "fast":
+        canvas = prefill.mirror_pad(canvas, dec.paste_box)  # structured seed
         from pipeline.fillers import lama_fill
         filled = lama_fill.fill(canvas, mask)
         engine = lama_fill.ENGINE
@@ -63,6 +65,7 @@ def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
         engine = powerpaint_fill.ENGINE
     else:
         raise ValueError(f"unknown tier '{tier}'")
+    filled = prefill.scrub_placeholder(filled, dec.paste_box)
     timings["fill"] = round(time.time() - t, 3)
 
     # ---- compose (guarantee enforced) ----------------------------------------
