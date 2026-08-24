@@ -1,0 +1,22 @@
+# Reference manifest of packages the project needs.
+# This machine's system Python (3.12, C:\Python312) already satisfies everything
+# EXCEPT simple-lama-inpainting and python-multipart (~1 MB total).
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.4            # installed: 2.11.0+cu128
+torchvision           # installed: 0.26.0+cu128
+simple-lama-inpainting==0.1.2   # MISSING - install on command
+ultralytics>=8.2      # installed: 8.4.120
+opencv-python-headless>=4.9   # installed: 4.13.0.92
+numpy<2               # installed: 1.26.4
+pillow>=10            # installed: 12.2.0
+huggingface_hub>=0.24 # installed: 0.25.2
+transformers>=4.44    # installed: 4.48.3
+diffusers>=0.30       # installed: 0.31.0
+accelerate>=0.33      # verify at setup
+safetensors>=0.4
+realesrgan==0.3.0     # installed
+basicsr==1.4.2        # installed
+fastapi>=0.111        # installed: 0.141.1
+uvicorn[standard]>=0.30   # installed: 0.29.0
+python-multipart>=0.0.9   # MISSING - required for file uploads - install on command
+python-dotenv>=1.0    # verify at setup

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+third_party/
+uploads/
+results/
+logs/
+debug/
+tests/samples/*
+!.gitkeep
