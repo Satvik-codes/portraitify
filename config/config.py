@@ -42,7 +42,8 @@ VALID_ALIGNS = ("auto", "top", "center", "bottom")
 FEATHER_PX = 40
 OVERLAP_PX = 48
 RAMP_PX = 16
-PP_GEN_LONG_SIDE = 1120
+PP_GEN_LONG_SIDE = 576   # throttled-GPU budget: (576/1120)^2 ~= 3.8x fewer px
+PP_STEPS = 14            # DPM++ multistep; tuned for <=~2.5 min fill on GTX 1650
 YOLO_PERSON_CONF = 0.35
 YOLO_ANY_CONF = 0.45
 AUTO_CENTROID_TARGET = 0.42  # subject centroid maps here on auto align

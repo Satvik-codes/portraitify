@@ -51,6 +51,24 @@ def fill(canvas_rgb: np.ndarray, mask_u8: np.ndarray,
 
     filled = cv2.resize(np.asarray(result_small.convert("RGB")), (W, H),
                         interpolation=cv2.INTER_CUBIC)
+
+    # fp16 NaN guard: BrushNet at this VRAM edge can cast NaN -> solid black
+    # regions. Heal them with the FAST engine. No erosion: every black pixel
+    # must be masked, or the surviving black ring becomes LaMa's context and
+    # it happily continues painting black.
+    for _pass in range(2):
+        black = (filled.max(axis=2) < 12).astype(np.uint8)
+        black[max(0, paste_box[1]):paste_box[1] + paste_box[3],
+              max(0, paste_box[0]):paste_box[0] + paste_box[2]] = 0
+        frac = black.mean()
+        if frac < 0.005:
+            break
+        heal = cv2.dilate(black, np.ones((15, 15), np.uint8)) * 255
+        log.info("quality NaN-heal pass %d: %.1f%% black -> lama",
+                 _pass + 1, 100 * frac)
+        from pipeline.fillers import lama_fill
+        filled = lama_fill.fill(filled, heal)
+
     px, py, pw, ph = paste_box  # guarantee survives resolution change
     filled[py:py + ph, px:px + pw] = scaled_original
     return filled
@@ -82,16 +100,17 @@ def _pipeline():
                 base = str(config.SD15_LOCAL_DIR)
                 dtype = torch.float16 if config.device() == "cuda" else torch.float32
                 unet = UNet2DConditionModel.from_pretrained(
-                    base, subfolder="unet", torch_dtype=dtype)
+                    base, subfolder="unet", variant="fp16", torch_dtype=dtype)
                 brushnet = BrushNetModel.from_pretrained(
                     str(config.POWERPAINT_DIR / "PowerPaint_Brushnet"),
-                    torch_dtype=dtype)
+                    variant="fp16", torch_dtype=dtype)
                 te = CLIPTextModel.from_pretrained(
                     str(config.POWERPAINT_DIR / "text_encoder_brushnet"),
-                    torch_dtype=dtype)
+                    variant="fp16", torch_dtype=dtype)
                 pipe = StableDiffusionPowerPaintBrushNetPipeline.from_pretrained(
                     base, unet=unet, brushnet=brushnet, text_encoder_brushnet=te,
-                    torch_dtype=dtype, safety_checker=None)
+                    torch_dtype=dtype, variant="fp16",
+                    safety_checker=None, requires_safety_checker=False)
                 pipe.scheduler = DPMSolverMultistepScheduler.from_config(
                     pipe.scheduler.config)
                 pipe.tokenizer = PowerPaintTokenizer(CLIPTokenizer.from_pretrained(
@@ -115,6 +134,10 @@ def _pipeline():
 
 
 def _outpaint(pipe, image, mask):
+    """Exact vendored-pipeline contract (verified against checked-out source):
+    image+mask, task prompts via promptA/promptB (+negatives); no plain
+    'prompt', no 'mask_image', no 'fitting_degree' on this BrushNet variant.
+    """
     import torch
     from PIL import Image
     pil_img = Image.fromarray(image)
@@ -122,24 +145,17 @@ def _outpaint(pipe, image, mask):
     seed = int(time.time()) & 0xFFFF
     generator = torch.Generator(device="cpu").manual_seed(seed)
 
-    base_kwargs = dict(image=pil_img, mask_image=pil_mask,
-                       width=pil_img.size[0], height=pil_img.size[1],
-                       guidance_scale=5.5, num_inference_steps=25,
-                       generator=generator)
-    task_kwargs = dict(promptA="P_ctxt", promptB="P_ctxt",
-                       negative_promptA="P_obj", negative_promptB="P_obj",
-                       fitting_degree=1.0)
     try:
         with torch.inference_mode():
-            return pipe(**base_kwargs, **task_kwargs).images[0]
-    except TypeError as e:
-        log.warning("task-token kwargs rejected (%s); retrying plain-prompt", e)
-    except torch.cuda.OutOfMemoryError as e:
-        raise QualityOOMError(str(e)) from e
-
-    try:
-        with torch.inference_mode():
-            return pipe(prompt="P_ctxt", negative_prompt="P_obj",
-                        **base_kwargs).images[0]
+            return pipe(
+                promptA="P_ctxt", promptB="P_ctxt",
+                promptU="",  # always encoded by vendored pipeline; empty = neutral
+                negative_promptA="P_obj", negative_promptB="P_obj",
+                negative_promptU="",
+                image=pil_img, mask=pil_mask,
+                width=pil_img.size[0], height=pil_img.size[1],
+                guidance_scale=5.5, num_inference_steps=config.PP_STEPS,
+                generator=generator,
+            ).images[0]
     except torch.cuda.OutOfMemoryError as e:
         raise QualityOOMError(str(e)) from e
