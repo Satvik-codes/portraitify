@@ -9,3 +9,5 @@ logs/
 debug/
 tests/samples/*
 !.gitkeep
+
+.venv-cu121/
