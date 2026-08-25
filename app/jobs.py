@@ -129,7 +129,7 @@ class JobManager:
                 self._execute(job)
 
     def _execute(self, job: Job):
-        from pipeline import run as pipeline_run, run_smart
+        from pipeline import run_smart
 
         def cb(stage, pct):
             job.set(stage=stage, progress=pct)
@@ -141,15 +141,10 @@ class JobManager:
             job.set(status="running")
             self._persist(job)
             img = _load_upload(config.UPLOADS_DIR / f"{job.id}.bin")
-            if job.params["tier"] == "auto":
-                meta = run_smart(img, ratio=job.params["ratio"],
-                                 align=job.params["align"],
-                                 job_id=job.id, cb=cb)
-            else:
-                meta = pipeline_run(img, ratio=job.params["ratio"],
-                                    tier=job.params["tier"],
-                                    align=job.params["align"],
-                                    job_id=job.id, cb=cb)
+            meta = run_smart(img, ratio=job.params["ratio"],
+                             tier=job.params["tier"],
+                             align=job.params["align"],
+                             job_id=job.id, cb=cb)
             if not tmp_result.exists():
                 raise IOError("pipeline reported success but result file missing")
             job.meta = {k: v for k, v in meta.items() if k != "result_path"}

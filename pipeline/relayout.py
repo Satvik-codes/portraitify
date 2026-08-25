@@ -16,10 +16,11 @@ ENGINE = "relayout"
 
 
 def _find_banner(img_rgb: np.ndarray):
-    """Largest saturated uniform-hue block (news banners/captions)."""
+    """Largest saturated uniform-hue block in the BOTTOM half (captions)."""
     hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
     s, v = hsv[..., 1], hsv[..., 2]
     m = ((s > 140) & (v > 90)).astype(np.uint8)
+    m[:img_rgb.shape[0] // 3] = 0  # banners/captions live low in the frame
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
     n, lab, stats, _ = cv2.connectedComponentsWithStats(m, 8)
     best, best_area = None, 0
@@ -32,14 +33,15 @@ def _find_banner(img_rgb: np.ndarray):
     x, y, w, h = stats[best, 0], stats[best, 1], stats[best, 2], stats[best, 3]
     if h < 24 or w < 100:
         return None
-    return (int(x), int(y), int(w), int(h))
+    return (int(x), int(y), int(w), int(h))  # NOTE: x,y,w,h format
 
 
 def _hero_box(img_rgb: np.ndarray):
     try:
-        from pipeline.detect import _load_yolo
-        model = _load_yolo()
-        dev = 0 if config.device() == "cuda" else "cpu"
+        from ultralytics import YOLO
+        from config import config as _c
+        model = YOLO(str(_c.YOLO_PT_PATH))
+        dev = 0 if _c.device() == "cuda" else "cpu"
         r = model.predict(img_rgb, conf=0.4, classes=[0], device=dev, verbose=False)
         if r and len(r[0].boxes):
             b = max(r[0].boxes.xyxy.cpu().numpy(),
@@ -115,13 +117,24 @@ def compose(img_rgb: np.ndarray, ratio: str = "9:16") -> np.ndarray:
         return bg
     _paste_rgba(bg, hero, cw // 2, int(chh * 0.34))
 
-    # banner (caption belongs near the bottom)
+    # banner (caption belongs near the bottom) - convert x,y,w,h -> x1,y1,x2,y2
     banner_box = _find_banner(img_rgb)
     if banner_box:
-        bw = int(cw * 0.92)
-        card, bh = _card(img_rgb, banner_box, bw, radius=20)
+        bx, by, bw2, bh2 = banner_box
+        card, bh = _card(img_rgb, (bx, by, bx + bw2, by + bh2),
+                         int(cw * 0.92), radius=20)
         if card is not None:
             _paste_rgba(bg, card, cw // 2, chh - bh // 2 - 40)
+
+    # channel logo: source top-right corner -> canvas top-right
+    lw = int(W * 0.16)
+    logo_crop = img_rgb[0:int(H * 0.14), W - lw:W]
+    if logo_crop.size and logo_crop.std() > 8:
+        card, lh = _card(img_rgb, (W - lw, 0, W, int(H * 0.14)),
+                         int(cw * 0.20), radius=14, pad=6)
+        if card is not None:
+            _paste_rgba(bg, card, cw - card.shape[1] // 2 - 24,
+                        card.shape[0] // 2 + 24)
 
     log.info("relayout composed: hero=%s banner=%s", (x1, y1, x2, y2), banner_box)
     return bg

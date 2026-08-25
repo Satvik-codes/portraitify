@@ -45,6 +45,10 @@ def fill(canvas_rgb: np.ndarray, mask_u8: np.ndarray,
 
     small = cv2.resize(canvas_rgb, (gw, gh), interpolation=cv2.INTER_AREA)
     mmask = cv2.resize(mask_u8, (gw, gh), interpolation=cv2.INTER_NEAREST)
+    # BrushNet was trained on binary masks; feathered values degenerate its
+    # conditioning into near-uniform output. Binarize; feathering happens
+    # downstream in compose instead.
+    mmask = np.where(mmask > 127, 255, 0).astype(np.uint8)
 
     with _pipeline() as pipe:
         result_small = _outpaint(pipe, small, mmask)
@@ -98,7 +102,11 @@ def _pipeline():
                 from diffusers import DPMSolverMultistepScheduler
 
                 base = str(config.SD15_LOCAL_DIR)
-                dtype = torch.float16 if config.device() == "cuda" else torch.float32
+                # PROVEN on this machine: fp16 compute corrupts to NaN (black
+                # fills) while fp32 is clean -> fp32 is the default. Set
+                # FORCE_FP16=true only on verified-healthy hardware.
+                dtype = torch.float16 if (config.device() == "cuda"
+                                          and config.FORCE_FP16) else torch.float32
                 unet = UNet2DConditionModel.from_pretrained(
                     base, subfolder="unet", variant="fp16", torch_dtype=dtype)
                 brushnet = BrushNetModel.from_pretrained(

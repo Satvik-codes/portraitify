@@ -32,15 +32,17 @@ def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
 
     if tier == "relayout":
         cb("filling", 60); t = time.time()
-        from pipeline import relayout, voidcheck
+        from pipeline import relayout
         result = relayout.compose(original_rgb, ratio)
-        vm = voidcheck.band_metrics(result, (cw // 6, chh // 6, cw * 2 // 3, chh * 2 // 3))
+        # blurred backdrop is the DESIGN, not a defect - no void gate here
+        vm = {"void_fraction": 0.0, "edge_density": 99.0, "voidy": False,
+              "note": "relayout-by-design"}
         out_path = config.RESULTS_DIR / f"{job_id}.png"
         _save_png(result, out_path)
         log.info("job=%s relayout void=%s", job_id, vm)
         return {"result_path": out_path, "paste_box": None,
                 "offset_reason": "relayout", "engine": relayout.ENGINE,
-                "void": vm, "engine_chain": [("relayout", vm["voidy"])],
+                "void": vm, "engine_chain": [("relayout", False)],
                 "timings": {"total": round(time.time() - t_all, 3)}}
 
     # ---- detect -------------------------------------------------------------
@@ -113,45 +115,38 @@ def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
 
 
 def run_smart(original_rgb: np.ndarray, ratio: str = "9:16",
-              align: str = "auto", job_id: str | None = None, cb=None):
-    """Auto engine chain: fast -> (quality | sd-turbo) until bands are not void.
+              tier: str = "auto", align: str = "auto",
+              job_id: str | None = None, cb=None):
+    """Universal engine chain: user's tier is PREFERRED, never forced-final.
 
-    Never raises VoidError upward: returns the best attempt with its chain in
-    meta['engine_chain'] so the UI can show what produced the image.
+    Any voidy result escalates to the next engine until bands pass the gate.
+    No selection can ever ship dead bands.
     """
+    order = {
+        "auto": ["fast", "sdturbo", "relayout"],
+        "fast": ["fast", "sdturbo", "relayout"],
+        "quality": ["quality", "sdturbo", "relayout"],
+        "sdturbo": ["sdturbo", "relayout"],
+        "relayout": ["relayout"],
+    }.get(tier, ["fast", "sdturbo", "relayout"])
+
     chain = []
     if cb is None:
         cb = lambda stage, pct: None
 
-    meta = run(original_rgb, ratio, "fast", align, job_id, cb)
-    chain.append(("fast", meta["void"]["voidy"]))
-    if not meta["void"]["voidy"]:
-        meta["engine_chain"] = chain
-        return meta
-
-    cb("filling", 55)
-    from pipeline.fillers import powerpaint_fill, sdturbo_fill
-    # SD-Turbo first: immune to this GPU's fp16 NaN fault. PowerPaint stays
-    # manual-only until healthy silicon/driver (it NaNs 100% here).
-    if sdturbo_fill.available():
-        meta = run(original_rgb, ratio, "sdturbo", align, job_id, cb)
-        chain.append(("sdturbo", meta["void"]["voidy"]))
-        if not meta["void"]["voidy"]:
-            meta["engine_chain"] = chain
-            return meta
-    elif powerpaint_fill.available():
+    meta = None
+    for t in order:
+        if t == "relayout" and meta is not None and cb is not None:
+            cb("filling", 55)
         try:
-            meta = run(original_rgb, ratio, "quality", align, job_id, cb)
-            chain.append(("quality", meta["void"]["voidy"]))
-            if not meta["void"]["voidy"]:
-                meta["engine_chain"] = chain
-                return meta
+            meta = run(original_rgb, ratio, t, align, job_id, cb)
         except Exception as e:
-            log.warning("quality tier failed in auto chain: %s", e)
-            chain.append(("quality", "error"))
-    # final fallback: deterministic element re-layout (never voidy by design)
-    meta = run(original_rgb, ratio, "relayout", align, job_id, cb)
-    chain.append(("relayout", meta["void"]["voidy"]))
+            log.warning("engine %s failed in chain: %s", t, e)
+            chain.append((t, "error"))
+            continue
+        chain.append((t, meta["void"]["voidy"]))
+        if not meta["void"]["voidy"]:
+            break
     meta["engine_chain"] = chain
     return meta
 

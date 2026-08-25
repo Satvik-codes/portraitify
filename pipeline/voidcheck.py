@@ -14,7 +14,7 @@ log = logging.getLogger("h2v.voidcheck")
 
 BLOCK = 16
 VOID_BLOCK_STD = 2.5          # block std below this = uniform = void candidate
-VOID_FRACTION_MAX = 0.22      # >22% uniform band area = voidy
+VOID_FRACTION_MAX = 0.30      # >30% uniform band area = voidy, color or not
 EDGE_DENSITY_MIN = 2.6        # mean |Laplacian| in bands below this = voidy
 
 
@@ -48,17 +48,12 @@ def band_metrics(img_rgb: np.ndarray, paste_box: tuple) -> dict:
     lap = cv2.Laplacian(gray, cv2.CV_32F)
     edge_density = float(np.abs(lap).mean())
 
-    # Colorful soft content (bokeh-style continuation) is a legitimate look;
-    # dead bands are monochrome (black NaN, placeholder gray, flat smear).
+    # Strict gate: uniform bands fail regardless of color. Colored mud is mud.
+    voidy = (void_fraction > VOID_FRACTION_MAX) or (edge_density < EDGE_DENSITY_MIN)
     hsv = cv2.cvtColor(band, cv2.COLOR_RGB2HSV)
-    mean_sat = float(hsv[..., 1].mean()) / 255.0
-    near_monochrome = mean_sat < 0.06
-
-    voidy = (void_fraction > VOID_FRACTION_MAX and near_monochrome) \
-        or edge_density < 1.2
     return {"void_fraction": round(void_fraction, 4),
             "edge_density": round(edge_density, 2),
-            "mean_saturation": round(mean_sat, 3),
+            "mean_saturation": round(float(hsv[..., 1].mean()) / 255.0, 3),
             "voidy": bool(voidy), "band_pixels": int(hh * ww)}
 
 

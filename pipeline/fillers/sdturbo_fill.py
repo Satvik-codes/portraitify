@@ -16,8 +16,8 @@ from config import config
 log = logging.getLogger("h2v.sdturbo")
 ENGINE = "sd-turbo"
 
-_STRENGTH = 0.85
-_STEPS = 4
+_STRENGTH = 0.9
+_STEPS = 8
 
 
 def available() -> bool:
