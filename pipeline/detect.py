@@ -6,6 +6,17 @@ from config import config
 
 log = logging.getLogger("h2v.detect")
 
+_yolo = None
+
+
+def _load_yolo():
+    """Shared YOLO loader for modules that need raw model access."""
+    global _yolo
+    if _yolo is None:
+        from ultralytics import YOLO
+        _yolo = YOLO(str(config.YOLO_PT_PATH))
+    return _yolo
+
 
 def _area_weighted_centroid_y(results, img_h: int):
     """Area-weighted mean normalized y over detection boxes/masks. None if empty."""
