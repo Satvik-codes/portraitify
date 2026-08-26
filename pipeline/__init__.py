@@ -141,20 +141,32 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     cb("placing", 25); t = time.time()
     from pipeline.detect import subject_centroid_y
     centroid, method = subject_centroid_y(cleaned)
-    # after.png reference: photo fills the TOP, graphics stack at the bottom
-    smart_align = "top" if align == "auto" else align
-    from pipeline.placement import decide_paste, build_mask
-    dec = decide_paste(cleaned.shape[1], cleaned.shape[0], cw, chh, smart_align, centroid)
-    px, py, pw, ph = dec.paste_box
-    scaled = _resize_exact(cleaned, pw, ph)
+    from pipeline.placement import build_mask
+
+    # after.png reference: photo zoom-cropped to fill ~72% height,
+    # top-anchored full-width; graphics stack in the bottom band.
+    target_h = max(64, int(config.SMART_PHOTO_HEIGHT * chh))
+    scale = target_h / cleaned.shape[0]
+    sw = int(round(cleaned.shape[1] * scale))
+    if sw >= cw:
+        scaled = _resize_exact(cleaned, sw, target_h)
+        x_crop = (sw - cw) // 2
+        band = scaled[:, x_crop:x_crop + cw]
+        photo_box = (0, 0, cw, target_h)
+    else:  # image too tall relative to canvas -> fit width, top anchored
+        fh = min(chh - 64, int(round(cleaned.shape[0] * cw / cleaned.shape[1])))
+        scaled = _resize_exact(cleaned, cw, fh)
+        band = scaled
+        photo_box = (0, 0, cw, fh)
+        target_h = fh
     canvas = np.full((chh, cw, 3), 127, dtype=np.uint8)
-    canvas[py:py + ph, px:px + pw] = scaled
-    mask = build_mask(cw, chh, dec.paste_box)
+    canvas[0:target_h] = band
+    mask = build_mask(cw, chh, photo_box)
     placed = L.plan_composition(plan, cw, chh, centroid)
     timings["place"] = round(time.time() - t, 3)
 
     cb("filling", 60); t = time.time()
-    canvas = prefill_mirror(canvas, dec.paste_box)
+    canvas = prefill_mirror(canvas, photo_box)
     filled, engine = None, None
     for fill_tier in config.SMART_FILL_ORDER:
         try:
@@ -172,7 +184,7 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     if filled is None:
         raise RuntimeError("all smart fill engines failed")
     from pipeline import prefill
-    filled = prefill.scrub_placeholder(filled, dec.paste_box)
+    filled = prefill.scrub_placeholder(filled, photo_box)
     timings["fill"] = round(time.time() - t, 3)
 
     cb("composing", 92); t = time.time()
@@ -180,8 +192,8 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     from pipeline.compose import composite, assert_region_identical
     from pipeline import cards as C
     from pipeline import cutout as CUT
-    result = composite(filled, scaled, dec.paste_box)
-    assert_region_identical(result, scaled, dec.paste_box)
+    result = composite(filled, band, photo_box)
+    assert_region_identical(result, band, photo_box)
 
     footprints = []
     fidelity_ok = True
@@ -206,7 +218,7 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     assert fidelity_ok, "graphic card fidelity violated"
 
     from pipeline import voidcheck
-    vm = voidcheck.band_metrics(result, dec.paste_box, exclude_boxes=footprints)
+    vm = voidcheck.band_metrics(result, photo_box, exclude_boxes=footprints)
     timings["compose"] = round(time.time() - t, 3)
     timings["total"] = round(time.time() - t_all, 3)
 
@@ -214,7 +226,8 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     _save_png(result, out_path)
     log.info("job=%s smart cards=%d engine=%s void=%s timings=%s",
              job_id, len(placed), engine, vm, timings)
-    return {"result_path": out_path, "paste_box": dec.paste_box,
+    return {"result_path": out_path, "paste_box": photo_box,
+            "smart_crop_x": x_crop if sw >= cw else 0,
             "offset_reason": f"smart|{method}", "engine": f"smart({engine})",
             "void": vm, "cards_composed": len(placed),
             "fidelity_ok": fidelity_ok,

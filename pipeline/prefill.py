@@ -22,7 +22,8 @@ def _tile_to(src: np.ndarray, target_len: int, axis: int) -> np.ndarray:
         cur = cur[::-1] if axis == 0 else cur[:, ::-1]
         pieces.append(cur)
         total += cur.shape[0] if axis == 0 else cur.shape[1]
-    return np.concatenate(pieces, axis=axis)[:target_len]
+    out = np.concatenate(pieces, axis=axis)
+    return out[:target_len] if axis == 0 else out[:, :target_len]
 
 
 def _progressive_soft(band: np.ndarray, seam_edge: str) -> np.ndarray:

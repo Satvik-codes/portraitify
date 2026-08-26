@@ -23,9 +23,8 @@ def decide_paste(orig_w: int, orig_h: int, canvas_w: int, canvas_h: int,
     if orig_w <= 0 or orig_h <= 0:
         raise ValueError(f"bad source dims {orig_w}x{orig_h}")
 
-    scale = canvas_w / orig_w
-    if orig_h * scale > canvas_h:
-        scale = canvas_h / orig_h
+    # Contain-scale: works for landscape, portrait, and already-vertical inputs
+    scale = min(canvas_w / orig_w, canvas_h / orig_h)
 
     w = max(1, int(round(orig_w * scale)))
     h = max(1, int(round(orig_h * scale)))

@@ -11,3 +11,5 @@ tests/samples/*
 !.gitkeep
 
 .venv-cu121/
+
+weights/

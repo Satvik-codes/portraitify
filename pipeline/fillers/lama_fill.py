@@ -38,7 +38,9 @@ def fill(image_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
 
     try:
         with model_slot(ENGINE, lambda: _make_simple_lama(dev if dev == "cuda" else None)) as model:
-            return _infer(model, image_rgb, mask_u8)
+            out = _infer(model, image_rgb, mask_u8)
+            # SimpleLama pads to /8 internally and returns the padded canvas
+            return out[:image_rgb.shape[0], :image_rgb.shape[1]]
 
     except torch.cuda.OutOfMemoryError:
         log.warning("LaMa OOM on GPU - single CPU retry at long-side<=1280")
@@ -52,6 +54,7 @@ def fill(image_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
 
         with model_slot("lama-cpu", lambda: _make_simple_lama("cpu")) as model:
             filled_small = _infer(model, small, msmall)
+            filled_small = filled_small[:small.shape[0], :small.shape[1]]
 
         back = (cv2.resize(filled_small, (image_rgb.shape[1], image_rgb.shape[0]),
                            interpolation=cv2.INTER_CUBIC)

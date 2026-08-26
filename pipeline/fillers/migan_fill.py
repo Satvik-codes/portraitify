@@ -21,7 +21,7 @@ def _model():
     if _jit is None:
         import torch
         _jit = torch.jit.load(str(config.TORCH_HOME / "hub" / "checkpoints" / "migan_traced.pt"),
-                              map_location="cpu")
+                              map_location="cpu").to(config.device())
     return _jit
 
 
@@ -38,15 +38,20 @@ def fill(image_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
     msmall = cv2.resize(mask_u8, (gw, gh), interpolation=cv2.INTER_NEAREST)
 
     def _run(model):
+        # Traced MI-GAN has a fixed 512x512 synthesis pyramid.
+        small = cv2.resize(image_rgb, (512, 512), interpolation=cv2.INTER_AREA)
+        msmall = cv2.resize(mask_u8, (512, 512), interpolation=cv2.INTER_NEAREST)
         t_img = torch.from_numpy(small.astype(np.float32) / 127.5 - 1.0) \
             .permute(2, 0, 1)[None].to(config.device())
         t_mask = torch.from_numpy((msmall > 127).astype(np.float32)) \
-            .permute(2 if msmall.ndim == 3 else 0, 1)[None, None].to(config.device())
+            [None, None].to(config.device())
+        t_in = torch.cat([t_img, t_mask], dim=1)  # 4-ch input (IOPaint contract)
         with torch.inference_mode():
-            out = model(t_img, t_mask)
+            out = model(t_in)
         out = out[0].permute(1, 2, 0).clamp(-1, 1).cpu().numpy()
         out = ((out + 1) * 127.5).astype(np.uint8)
-        return cv2.resize(out, (W, H), interpolation=cv2.INTER_CUBIC)
+        out = cv2.resize(out, (W, H), interpolation=cv2.INTER_CUBIC)
+        return out[..., ::-1]  # traced model is BGR (IOPaint export) -> RGB
 
     with model_slot(ENGINE, _model) as model:
         filled = _run(model)

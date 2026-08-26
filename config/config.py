@@ -32,11 +32,12 @@ SD15_LOCAL_DIR = PROJECT_ROOT / "third_party" / "sd15_base"
 # --- Canvas presets ----------------------------------------------------------
 CANVAS_SIZES = {
     "9:16": (1080, 1920),
+    "2:3": (1024, 1536),
     "4:5": (1080, 1350),
     "1:1": (1080, 1080),
 }
 VALID_RATIOS = tuple(CANVAS_SIZES.keys())
-VALID_TIERS = ("auto", "fast", "quality", "sdturbo", "relayout")
+VALID_TIERS = ("auto", "smart", "fast", "quality", "sdturbo", "relayout")
 VALID_ALIGNS = ("auto", "top", "center", "bottom")
 
 # --- Pipeline tuning ---------------------------------------------------------
@@ -44,7 +45,21 @@ FEATHER_PX = 40
 OVERLAP_PX = 48
 RAMP_PX = 16
 PP_GEN_LONG_SIDE = 576   # throttled-GPU budget: (576/1120)^2 ~= 3.8x fewer px
-PP_STEPS = 8            # fp32 offloaded steps (~24s each on this GPU) -> ~3min fill
+PP_STEPS = 8             # fp32 offloaded steps (~24s each on this GPU) -> ~3min fill
+
+# --- Layer detection (tuned on tests/samples/before.jpeg) --------------------
+LAYER_BANNER_MIN_AREA = 0.015
+LAYER_BANNER_SAT = 140
+LAYER_BANNER_VAL = 90
+LAYER_STRIP_LIGHT_V = 200
+LAYER_STRIP_LIGHT_S = 60
+LAYER_STRIP_EDGE_DENSITY = 0.08
+LAYER_CORNER_LOGO_AREA = (0.0015, 0.03)
+LAYER_CUTOUT_RING_STD = 14
+SMART_PHOTO_HEIGHT = 0.72
+SMART_FILL_ORDER = ("sdturbo", "lama")
+CARD_FEATHER_PX = 4
+CARD_SHADOW_ALPHA = 90
 YOLO_PERSON_CONF = 0.35
 YOLO_ANY_CONF = 0.45
 AUTO_CENTROID_TARGET = 0.42  # subject centroid maps here on auto align

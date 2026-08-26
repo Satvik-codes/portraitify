@@ -59,13 +59,13 @@ footer{margin-top:26px;color:var(--dim);font-size:12px}
 </style>
 </head>
 <body>
-<header><h1>H2V Smart Converter</h1><span class="badge" id="gpuBadge">checking GPU…</span></header>
+<header><h1>H2V Smart Converter</h1><span class="badge" id="gpuBadge">checking GPUâ€¦</span></header>
 <main>
 
 <section class="card">
   <div id="drop">
     <p><b>Drop image</b>, click to browse, or paste from clipboard</p>
-    <p style="font-size:12px">jpg · png · webp — original pixels are never modified</p>
+    <p style="font-size:12px">jpg Â· png Â· webp â€” original pixels are never modified</p>
   </div>
 </section>
 
@@ -87,11 +87,11 @@ footer{margin-top:26px;color:var(--dim);font-size:12px}
   </div>
   <label class="small" style="margin-top:16px">Quality tier</label>
   <div class="tiers">
-    <div class="tier on" data-tier="auto"><h3>Auto · no voids, ever</h3><span>picks the engine per image</span></div>
-    <div class="tier" data-tier="fast"><h3>Fast · texture</h3><span>LaMa · ~15 s</span></div>
-    <div class="tier" data-tier="quality"><h3>Quality · semantic</h3><span>PowerPaint-V2 · ~90 s</span></div>
+    <div class="tier on" data-tier="auto"><h3>Auto Â· no voids, ever</h3><span>picks the engine per image</span></div>
+    <div class="tier" data-tier="fast"><h3>Fast Â· texture</h3><span>LaMa Â· ~15 s</span></div>
+    <div class="tier" data-tier="quality"><h3>Quality Â· semantic</h3><span>PowerPaint-V2 Â· ~90 s</span></div>
   </div>
-  <button id="go" disabled>Convert → 9:16</button>
+  <button id="go" disabled>Convert â†’ 9:16</button>
   <div id="barWrap"><div id="bar"></div></div>
   <div id="status"></div>
 </section>
@@ -104,7 +104,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px}
   </div>
   <input type="range" id="slider" min="0" max="100" value="55" aria-label="compare slider">
   <div class="actions">
-    <a class="btn" id="dlBtn" download="vertical.png">⬇ Download PNG</a>
+    <a class="btn" id="dlBtn" download="vertical.png">â¬‡ Download PNG</a>
     <button class="btn ghost" id="againBtn">Convert another</button>
   </div>
 </section>
@@ -115,14 +115,14 @@ footer{margin-top:26px;color:var(--dim);font-size:12px}
 </section>
 
 </main>
-<footer>runs entirely on this machine · nothing leaves localhost</footer>
+<footer>runs entirely on this machine Â· nothing leaves localhost</footer>
 
 <script>
 const $=s=>document.querySelector(s);
 let file=null, ratio="9:16", tier="fast", jobId=null, poller=null, ctrl=null;
 
 fetch("/healthz").then(r=>r.json()).then(h=>{
-  $("#gpuBadge").textContent=(h.gpu||"no GPU")+" · "+(h.vram_gb||"?")+" GB";
+  $("#gpuBadge").textContent=(h.gpu||"no GPU")+" Â· "+(h.vram_gb||"?")+" GB";
   if(!h.fast_tier) $("#status").textContent="Fast tier unavailable - run scripts\\verify_assets.ps1",$("#status").classList.add("err");
   if(!h.quality_tier){
     const q=document.querySelector('.tier[data-tier="quality"]');
@@ -141,7 +141,7 @@ fetch("/healthz").then(r=>r.json()).then(h=>{
   });
 });
 
-function updGo(){$("#go").textContent=`Convert → ${ratio}`;$("#go").disabled=!file;}
+function updGo(){$("#go").textContent=`Convert â†’ ${ratio}`;$("#go").disabled=!file;}
 
 // ---- dropzone -------------------------------------------------------------
 const dz=$("#drop");
@@ -173,7 +173,7 @@ document.querySelectorAll(".tier").forEach(t=>t.onclick=()=>{
 // ---- convert ----------------------------------------------------------------
 $("#go").onclick=async()=>{
   if(!file)return;
-  $("#go").disabled=true;$("#barWrap").style.display="block";setBar(2,"queued…");
+  $("#go").disabled=true;$("#barWrap").style.display="block";setBar(2,"queuedâ€¦");
   const fd=new FormData();fd.append("file",file);fd.append("ratio",ratio);
   fd.append("tier",tier);fd.append("align",$("#align").value);
   try{
@@ -191,10 +191,10 @@ function poll(id,n){
       const r=await fetch("/api/jobs/"+id);
       if(r.status===404)return fail("job vanished (server restarted?)");
       const j=await r.json();
-      setBar(Math.max(3,j.progress),j.stage?j.stage+"…":j.status);
+      setBar(Math.max(3,j.progress),j.stage?j.stage+"â€¦":j.status);
       if(j.status==="done"){
-        const chain=(j.meta&&j.meta.engine_chain)?(" · engine: "+j.meta.engine_chain.map(c=>c[0]).join("→")):"";
-        setBar(100,"done ✨"+chain);showResult(j);return;
+        const chain=(j.meta&&j.meta.engine_chain)?(" Â· engine: "+j.meta.engine_chain.map(c=>c[0]).join("â†’")):"";
+        setBar(100,"done âœ¨"+chain);showResult(j);return;
       }
       if(j.status==="failed")return fail(j.error||"unknown failure");
       poll(id,n+1);
@@ -239,7 +239,7 @@ function renderHistory(h){
   $("#histCard").hidden=false;$("#history").innerHTML="";
   h.forEach(x=>{
     const im=new Image();im.src=x.url;im.title=x.id.slice(0,6);
-    im.onerror=()=>im.replaceWith(Object.assign(document.createElement("span"),{textContent:"· expired"}));
+    im.onerror=()=>im.replaceWith(Object.assign(document.createElement("span"),{textContent:"Â· expired"}));
     im.onclick=()=>{$("#beforeImg").src="/api/uploads/"+x.id;$("#afterImg").src=x.url;
       $("#dlBtn").href=x.url;$("#resultCard").hidden=false;};
     $("#history").appendChild(im);

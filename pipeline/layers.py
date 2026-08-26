@@ -247,6 +247,8 @@ def detect_layers(img):
     cards = _resolve_overlaps(cards)
     union = np.zeros((H, W), np.uint8)
     for c in cards:
+        if c.kind == "cutout":
+            continue  # anchor stays part of the photo layer (after.png ref)
         x, y, w, h = c.box
         union[y:y + h, x:x + w] = 255
     log.info("layers: %s", [(c.kind, c.box) for c in cards])
@@ -289,3 +291,35 @@ if __name__ == "__main__":
     Image.fromarray(vis).save(out, quality=92)
     print([(c.kind, c.box) for c in plan.cards])
     print("overlay ->", out)
+
+
+# --- Composition planner ------------------------------------------------------
+
+def plan_composition(plan, canvas_w, canvas_h, centroid_y):
+    """Map detected cards onto the target canvas. Returns placed list of
+    (card, x, y, w, h) with photo rect handled separately by decide_paste."""
+    placed = []
+    banner = next((c for c in plan.cards if c.kind == "banner"), None)
+    strip = next((c for c in plan.cards if c.kind == "strip"), None)
+    logo = next((c for c in plan.cards if c.kind == "corner_logo"), None)
+
+
+    if banner is not None:
+        w = int(canvas_w * 0.92)
+        h = int(banner.crop.shape[0] * w / banner.crop.shape[1])
+        x = (canvas_w - w) // 2
+        y = canvas_h - h - 36
+        placed.append((banner, x, y, w, h))
+    if strip is not None:
+        w = int(canvas_w * 0.70)
+        h = int(strip.crop.shape[0] * w / strip.crop.shape[1])
+        x = (canvas_w - w) // 2
+        y = (canvas_h - h - 36 if banner is None else
+             canvas_h - 36 - (banner.crop.shape[0] * int(canvas_w * 0.92) // banner.crop.shape[1]) - 24 - h)
+        placed.append((strip, x, y, w, h))
+    if logo is not None:
+        w = int(min(0.20 * canvas_w, max(0.08 * canvas_w,
+                                        logo.meta["rel_w"] * canvas_w)))
+        h = int(logo.crop.shape[0] * w / logo.crop.shape[1])
+        placed.append((logo, canvas_w - w - 24, 24, w, h))
+    return placed

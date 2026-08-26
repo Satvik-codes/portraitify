@@ -1,19 +1,19 @@
 # Portraitify
 
-**Horizontal → vertical image converter that thinks.** Drop any landscape photo — news screenshots with tickers, portraits, landscapes — and it detects the subjects, then fills every pixel of the vertical frame so nothing is ever blank: either the scene continues naturally, or the image's own elements are rearranged into a composed vertical card.
+**Horizontal â†’ vertical image converter that thinks.** Drop any landscape photo â€” news screenshots with tickers, portraits, landscapes â€” and it detects the subjects, then fills every pixel of the vertical frame so nothing is ever blank: either the scene continues naturally, or the image's own elements are rearranged into a composed vertical card.
 
 Runs 100% locally (built on a GTX 1650 4GB laptop). Nothing leaves localhost.
 
 ## The engine chain (why results are never black)
 
-Every conversion runs through a **void gate** — bands are scored for uniform/featureless content after filling. If an engine's output fails, the next one takes over automatically. No selection can ever ship dead bands.
+Every conversion runs through a **void gate** â€” bands are scored for uniform/featureless content after filling. If an engine's output fails, the next one takes over automatically. No selection can ever ship dead bands.
 
 | Order | Engine | What it does | Time* |
 |---|---|---|---|
 | 1 | **Fast (Big-LaMa)** | mirror-seeded texture continuation of sky/walls/background | ~15 s |
 | 2 | **SD-Turbo (fp32)** | semantic img2img scene continuation | ~90 s |
 | 3 | **Re-layout** | the image's own elements (hero subject, banner, logo) recomposed as a vertical card over a blurred backdrop | ~20 s |
-| opt-in | **Quality (PowerPaint-V2)** | full semantic outpainting — needs healthy fp16; auto-falls-back to the chain above when the GPU can't | ~4 min |
+| opt-in | **Quality (PowerPaint-V2)** | full semantic outpainting â€” needs healthy fp16; auto-falls-back to the chain above when the GPU can't | ~4 min |
 
 *Times measured on a GTX 1650 Mobile (4GB).
 
@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_assets.ps1        # all-
 .\run.bat                                                                 # http://127.0.0.1:8000
 ```
 
-Drop an image → pick ratio (9:16 / 4:5 / 1:1) → tier → Convert → compare-slider → download.
+Drop an image â†’ pick ratio (9:16 / 4:5 / 1:1) â†’ tier â†’ Convert â†’ compare-slider â†’ download.
 
 ## The pixel guarantee
 
@@ -59,7 +59,7 @@ python tests\test_pixel_guarantee.py       # byte-identity matrix
 
 | Symptom | Fix |
 |---|---|
-| black/dark bands in Quality | expected on fp16-broken GPUs — use Auto; see GPU caveat above |
+| black/dark bands in Quality | expected on fp16-broken GPUs â€” use Auto; see GPU caveat above |
 | `verify_assets` FAIL big-lama.pt | place `big-lama.pt` in `%USERPROFILE%\.cache\torch\hub\checkpoints\` |
 | Quality button slow (~4 min) | fp32 offload path; Fast/Auto recommended on 4 GB cards |
 | server restarted mid-job | job auto-marked failed; resubmit |
@@ -68,10 +68,18 @@ python tests\test_pixel_guarantee.py       # byte-identity matrix
 
 ```
 app/         FastAPI server, routes, job engine, static UI
-pipeline/    detect · placement · voidcheck · relayout · fillers(lama/sdturbo/powerpaint) · upscale · compose
+pipeline/    detect Â· placement Â· voidcheck Â· relayout Â· fillers(lama/sdturbo/powerpaint) Â· upscale Â· compose
 config/      single source of truth for every knob & path
 scripts/     env setup, weight fetching, downloads, audits, GPU probes
-tests/       placement math · smoke e2e · pixel-guarantee matrix
+tests/       placement math Â· smoke e2e Â· pixel-guarantee matrix
 ```
 
 See `implementation-plan.md` for the full architecture.
+
+## v3 — Layer-Aware Recomposition (smart engine)
+
+News-graphic screenshots are decomposed into **layers** and recomposed:
+the photo is zoomed to fill ~72% of the vertical frame (saliency/anchor-biased crop), generatively extended (SD-Turbo fp32, void-gated), while banners, logo strips and badges are lifted out, cleaned underneath (MI-GAN), and re-composed pixel-exact at vertical-layout positions. Anchors/logos get SAM 2.1 alpha cutouts. One click: drop image → pick ratio → Convert (Auto).
+
+Reference: `tests/samples/before.jpeg` → target look `tests/samples/after.png`.
+Known fp16 note: this GPU's fp16 path is faulty (NaN); all diffusion runs fp32. Set `FORCE_FP16=true` in `.env` only on verified-healthy hardware.
