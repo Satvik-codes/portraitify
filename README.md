@@ -1,91 +1,77 @@
 # Portraitify
 
-**Horizontal → vertical image converter that thinks.** Drop any landscape photo — news screenshots with tickers, portraits, landscapes — and it detects the subjects, smartly places the untouched original on a tall canvas, and AI-fills every remaining pixel so the result looks like it was shot vertical. No blank bars, no stretching.
+**Horizontal → vertical image converter that thinks.** Drop any landscape photo — news screenshots with tickers, portraits, landscapes — and it detects the subjects, then fills every pixel of the vertical frame so nothing is ever blank: either the scene continues naturally, or the image's own elements are rearranged into a composed vertical card.
 
-Runs 100% locally on a modest GPU (built & tuned on a GTX 1650 4GB). Nothing ever leaves localhost.
+Runs 100% locally (built on a GTX 1650 4GB laptop). Nothing leaves localhost.
 
-## How it works
+## The engine chain (why results are never black)
 
-```
-detect   → YOLOv8n-seg finds people/objects; saliency fallback
-place    → subject-aware placement of the ORIGINAL frame on the target canvas
-           (original pixels are never modified — text stays crisp)
-fill     → FAST: Big-LaMa (~10-20s)      QUALITY: PowerPaint-V2 (~90s)
-polish   → RealESRGAN upscale (Quality tier only)
-compose  → byte-identical re-paste + seam feathering, guarantee asserted
-```
+Every conversion runs through a **void gate** — bands are scored for uniform/featureless content after filling. If an engine's output fails, the next one takes over automatically. No selection can ever ship dead bands.
 
-The **pixel guarantee**: every output's original region is verified byte-for-byte against the input before saving. A violated guarantee aborts the job instead of shipping.
+| Order | Engine | What it does | Time* |
+|---|---|---|---|
+| 1 | **Fast (Big-LaMa)** | mirror-seeded texture continuation of sky/walls/background | ~15 s |
+| 2 | **SD-Turbo (fp32)** | semantic img2img scene continuation | ~90 s |
+| 3 | **Re-layout** | the image's own elements (hero subject, banner, logo) recomposed as a vertical card over a blurred backdrop | ~20 s |
+| opt-in | **Quality (PowerPaint-V2)** | full semantic outpainting — needs healthy fp16; auto-falls-back to the chain above when the GPU can't | ~4 min |
 
-| | Fast | Quality |
-|---|---|---|
-| Engine | Big-LaMa | PowerPaint-V2 (BrushNet) |
-| Time / image | ~10–20 s | ~75–95 s |
-| Best for | skies, walls, studio backgrounds | semantic scenes needing new content |
-| Weights needed | cached automatically | one-time ~4–5 GB download |
+*Times measured on a GTX 1650 Mobile (4GB).
+
+The chosen engine is reported per result (`engine_chain` in the job metadata / shown in the UI status line).
+
+## Known GPU caveat
+
+GTX 16-series cards with recent NVIDIA drivers (610.x) exhibit broken fp16 compute: NaN-corrupted diffusion output and inverted fp16/fp32 throughput. This app detects and routes around it (fp32 paths + escalation). If you roll back to a 55x.xx driver and `python scripts\gpu_probe.py` reports <40 ms matmul, add `FORCE_FP16=true` to `.env` to re-enable fast fp16 everywhere.
 
 ## Quickstart
 
 ```powershell
-# 1. environment check + deps (system python 3.12 assumed)
-powershell -ExecutionPolicy Bypass -File scripts\setup_env.ps1
-
-# 2. copy local weights from sibling projects (no downloads)
-powershell -ExecutionPolicy Bypass -File scripts\fetch_local_weights.ps1
-
-# 3. optional Quality tier (~4-5 GB, resumable)
-powershell -ExecutionPolicy Bypass -File scripts\download_powerpaint.ps1
-
-# 4. audit everything
-powershell -ExecutionPolicy Bypass -File scripts\verify_assets.ps1
-
-# 5. run
-.\run.bat          # opens http://127.0.0.1:8000
+powershell -ExecutionPolicy Bypass -File scripts\setup_env.ps1            # env + GPU check
+powershell -ExecutionPolicy Bypass -File scripts\fetch_local_weights.ps1  # copies local weights
+powershell -ExecutionPolicy Bypass -File scripts\download_powerpaint.ps1  # optional Quality tier (~4-5 GB)
+powershell -ExecutionPolicy Bypass -File scripts\verify_assets.ps1        # all-PASS gate
+.\run.bat                                                                 # http://127.0.0.1:8000
 ```
 
-Drag an image in, pick a ratio (9:16 / 4:5 / 1:1), Convert, slide the before/after handle, download.
+Drop an image → pick ratio (9:16 / 4:5 / 1:1) → tier → Convert → compare-slider → download.
+
+## The pixel guarantee
+
+For continuation tiers, the original frame region in every output is verified **byte-for-byte identical** to the input before saving (`tests\test_pixel_guarantee.py`). Text, tickers and logos stay crisp by construction. Re-layout composes from exact source crops instead, so fidelity holds there too (`fidelity_ok` in job metadata).
 
 ## Tests
 
 ```powershell
-python tests\test_placement_math.py        # geometry + mask invariants (16 checks)
-python tests\smoke_e2e.py --tier fast      # end-to-end conversion + timings
-python tests\test_pixel_guarantee.py       # byte-identity matrix (the big one)
-python tests\test_pixel_guarantee.py --full
+python tests\test_placement_math.py        # geometry + mask invariants
+python tests\smoke_e2e.py --tier fast      # end-to-end + timings
+python tests\test_pixel_guarantee.py       # byte-identity matrix
 ```
-
-Drop real photos into `tests/samples/` (gitignored) to test on your own material.
 
 ## Tuning knobs (`config/config.py`)
 
 | Knob | Default | Effect |
 |---|---|---|
-| `FEATHER_PX` | 40 | mask blur at seams — higher = softer blend |
-| `OVERLAP_PX` | 48 | how far filling eats into the frame border for context |
-| `RAMP_PX` | 16 | background-side softening width before the paste edge |
-| `PP_GEN_LONG_SIDE` | 1120 | Quality-tier generation resolution (VRAM budget) |
-
-Defaults were picked for news-screenshot-style material on a GTX 1650; sweep them on your own samples via `KEEP_DEBUG=true` to inspect masks and fills per job under `debug/`.
+| `FEATHER_PX` / `OVERLAP_PX` | 40 / 48 | seam blend vs context depth for fillers |
+| `PP_GEN_LONG_SIDE` / `PP_STEPS` | 576 / 8 | PowerPaint resolution/steps (VRAM-time budget) |
+| `FORCE_FP16` | false | flip ON only on verified-healthy fp16 hardware |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `verify_assets` FAIL on big-lama.pt | open IOPaint once or place `big-lama.pt` in `%USERPROFILE%\.cache\torch\hub\checkpoints\` |
-| Quality button disabled in UI | run `scripts\download_powerpaint.ps1` (needs your go-ahead — it's the only download) |
-| "GPU ran out of memory" toast | use Fast tier, smaller source, or close VRAM-hungry apps |
-| server restarted mid-job | job auto-marked failed; just resubmit |
-| CUDA unavailable in healthz | update NVIDIA driver; check `nvidia-smi` |
+| black/dark bands in Quality | expected on fp16-broken GPUs — use Auto; see GPU caveat above |
+| `verify_assets` FAIL big-lama.pt | place `big-lama.pt` in `%USERPROFILE%\.cache\torch\hub\checkpoints\` |
+| Quality button slow (~4 min) | fp32 offload path; Fast/Auto recommended on 4 GB cards |
+| server restarted mid-job | job auto-marked failed; resubmit |
 
 ## Layout
 
 ```
 app/         FastAPI server, routes, job engine, static UI
-pipeline/    detect · placement · fillers(lama/powerpaint) · upscale · compose
+pipeline/    detect · placement · voidcheck · relayout · fillers(lama/sdturbo/powerpaint) · upscale · compose
 config/      single source of truth for every knob & path
-scripts/     env setup, weight fetching, downloads, audits
+scripts/     env setup, weight fetching, downloads, audits, GPU probes
 tests/       placement math · smoke e2e · pixel-guarantee matrix
-models/      local weights (gitignored)   third_party/  PP-V2 + SD1.5 (gitignored)
 ```
 
-See `implementation-plan.md` for the full architecture the build followed.
+See `implementation-plan.md` for the full architecture.

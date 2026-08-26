@@ -1,4 +1,4 @@
-"""Element re-layout engine: rearrange the image's own regions into a
+﻿"""Element re-layout engine: rearrange the image's own regions into a
 vertical composition (blurred backdrop + hero crop + banner/logo cards).
 
 Deterministic, CPU-only, zero NaN risk. Used as the final fallback when
@@ -39,9 +39,8 @@ def _find_banner(img_rgb: np.ndarray):
 def _hero_box(img_rgb: np.ndarray):
     try:
         from ultralytics import YOLO
-        from config import config as _c
-        model = YOLO(str(_c.YOLO_PT_PATH))
-        dev = 0 if _c.device() == "cuda" else "cpu"
+        model = YOLO(str(config.YOLO_PT_PATH))
+        dev = 0 if config.device() == "cuda" else "cpu"
         r = model.predict(img_rgb, conf=0.4, classes=[0], device=dev, verbose=False)
         if r and len(r[0].boxes):
             b = max(r[0].boxes.xyxy.cpu().numpy(),
@@ -54,7 +53,7 @@ def _hero_box(img_rgb: np.ndarray):
 
 
 def _card(src, box, target_w, radius=28, pad=10):
-    """Crop box from source, scale to width, rounded corners + soft shadow."""
+    """Crop box (x1,y1,x2,y2) from source, scale to width, rounded corners."""
     x1, y1, x2, y2 = [int(v) for v in box]
     crop = src[max(0, y1):y2, max(0, x1):x2]
     if crop.size == 0:
@@ -73,16 +72,16 @@ def _card(src, box, target_w, radius=28, pad=10):
 
 
 def _rounded(mask, r):
-    m = mask.copy()
-    for cy, cx in [(r, r), (r, -r - 1), (-r - 1, r), (-r - 1, -r - 1)]:
-        y0 = r if cy == r else mask.shape[0] + cy + 1
-        x0 = r if cx == r else mask.shape[1] + cx + 1
-        yy, xx = np.mgrid[0:2 * r, 0:2 * r]
-        corner = (xx - r) ** 2 + (yy - r) ** 2 > r * r
-        region = m[y0:y0 + 2 * r, x0:x0 + 2 * r]
-        if region.shape[:2] == corner.shape:
-            region[corner] = 0
-    return m
+    r = max(2, min(r, mask.shape[0] // 2, mask.shape[1] // 2))
+    return _rounded_rect_mask(mask.shape[0], mask.shape[1], r)
+
+
+def _rounded_rect_mask(h, w, r):
+    yy, xx = np.mgrid[0:h, 0:w]
+    cx = np.clip(xx, r, w - 1 - r)
+    cy = np.clip(yy, r, h - 1 - r)
+    inside = (xx - cx) ** 2 + (yy - cy) ** 2 <= r ** 2
+    return inside.astype(np.uint8)
 
 
 def _paste_rgba(base, card, cx, cy):
@@ -96,9 +95,11 @@ def _paste_rgba(base, card, cx, cy):
                                   roi.astype(np.float32) * (1 - a)).astype(np.uint8)
 
 
-def compose(img_rgb: np.ndarray, ratio: str = "9:16") -> np.ndarray:
+def compose(img_rgb: np.ndarray, ratio: str = "9:16"):
+    """Returns (canvas, info_dict) - info reports what was composed."""
     cw, chh = config.CANVAS_SIZES[ratio]
     H, W = img_rgb.shape[:2]
+    cards = 0
 
     # backdrop: cover-crop + heavy blur + darken
     scale = max(cw / W, chh / H)
@@ -114,27 +115,31 @@ def compose(img_rgb: np.ndarray, ratio: str = "9:16") -> np.ndarray:
     hero_w = int(cw * 0.86)
     hero, hh = _card(img_rgb, (x1, y1, x2, y2), hero_w)
     if hero is None:
-        return bg
+        return bg, {"cards_composed": 0, "fidelity_ok": False}
     _paste_rgba(bg, hero, cw // 2, int(chh * 0.34))
+    cards += 1
 
     # banner (caption belongs near the bottom) - convert x,y,w,h -> x1,y1,x2,y2
     banner_box = _find_banner(img_rgb)
     if banner_box:
-        bx, by, bw2, bh2 = banner_box
-        card, bh = _card(img_rgb, (bx, by, bx + bw2, by + bh2),
+        bx_, by_, bw_, bh_ = banner_box
+        card, bh = _card(img_rgb, (bx_, by_, bx_ + bw_, by_ + bh_),
                          int(cw * 0.92), radius=20)
         if card is not None:
             _paste_rgba(bg, card, cw // 2, chh - bh // 2 - 40)
+            cards += 1
 
     # channel logo: source top-right corner -> canvas top-right
     lw = int(W * 0.16)
-    logo_crop = img_rgb[0:int(H * 0.14), W - lw:W]
-    if logo_crop.size and logo_crop.std() > 8:
-        card, lh = _card(img_rgb, (W - lw, 0, W, int(H * 0.14)),
-                         int(cw * 0.20), radius=14, pad=6)
+    logo_region = img_rgb[0:int(H * 0.14), W - lw:W]
+    if logo_region.size and logo_region.std() > 8:
+        card, _lh = _card(img_rgb, (W - lw, 0, W, int(H * 0.14)),
+                          int(cw * 0.20), radius=14, pad=6)
         if card is not None:
             _paste_rgba(bg, card, cw - card.shape[1] // 2 - 24,
                         card.shape[0] // 2 + 24)
+            cards += 1
 
-    log.info("relayout composed: hero=%s banner=%s", (x1, y1, x2, y2), banner_box)
-    return bg
+    log.info("relayout composed %d cards: hero=%s banner=%s",
+             cards, (x1, y1, x2, y2), banner_box)
+    return bg, {"cards_composed": cards, "fidelity_ok": cards >= 1}

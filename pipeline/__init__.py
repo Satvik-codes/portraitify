@@ -18,6 +18,10 @@ class QualityNotInstalledError(RuntimeError):
     pass
 
 
+class NoGraphicsSignal(RuntimeError):
+    """Raised by smart tier when the image has no graphic layers."""
+
+
 def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
         align: str = "auto", job_id: str | None = None, cb=None):
     """Returns dict(result_path, paste_box, offset_reason, engine, timings)."""
@@ -30,19 +34,24 @@ def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
     H, W = original_rgb.shape[:2]
     cw, chh = config.CANVAS_SIZES[ratio]
 
+    if tier == "smart":
+        return _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh)
+
     if tier == "relayout":
         cb("filling", 60); t = time.time()
         from pipeline import relayout
-        result = relayout.compose(original_rgb, ratio)
+        result, info = relayout.compose(original_rgb, ratio)
         # blurred backdrop is the DESIGN, not a defect - no void gate here
         vm = {"void_fraction": 0.0, "edge_density": 99.0, "voidy": False,
               "note": "relayout-by-design"}
         out_path = config.RESULTS_DIR / f"{job_id}.png"
         _save_png(result, out_path)
-        log.info("job=%s relayout void=%s", job_id, vm)
+        log.info("job=%s relayout info=%s", job_id, info)
         return {"result_path": out_path, "paste_box": None,
                 "offset_reason": "relayout", "engine": relayout.ENGINE,
-                "void": vm, "engine_chain": [("relayout", False)],
+                "void": vm, "cards_composed": info["cards_composed"],
+                "fidelity_ok": info["fidelity_ok"],
+                "engine_chain": [("relayout", False)],
                 "timings": {"total": round(time.time() - t_all, 3)}}
 
     # ---- detect -------------------------------------------------------------
@@ -114,6 +123,116 @@ def run(original_rgb: np.ndarray, ratio: str = "9:16", tier: str = "fast",
             "engine": engine, "void": meta_void, "timings": timings}
 
 
+def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
+    """Layer-aware recomposition: photo dominates + graphics re-composed."""
+    t_all = time.time()
+    timings = {}
+    t = time.time()
+    from pipeline import layers as L
+    plan = L.detect_layers(original_rgb)
+    timings["detect"] = round(time.time() - t, 3)
+    if not plan.found:
+        raise NoGraphicsSignal("no graphic layers detected")
+
+    cb("cleaning", 15); t = time.time()
+    cleaned = L.clean_photo(original_rgb, plan)
+    timings["clean"] = round(time.time() - t, 3)
+
+    cb("placing", 25); t = time.time()
+    from pipeline.detect import subject_centroid_y
+    centroid, method = subject_centroid_y(cleaned)
+    # after.png reference: photo fills the TOP, graphics stack at the bottom
+    smart_align = "top" if align == "auto" else align
+    from pipeline.placement import decide_paste, build_mask
+    dec = decide_paste(cleaned.shape[1], cleaned.shape[0], cw, chh, smart_align, centroid)
+    px, py, pw, ph = dec.paste_box
+    scaled = _resize_exact(cleaned, pw, ph)
+    canvas = np.full((chh, cw, 3), 127, dtype=np.uint8)
+    canvas[py:py + ph, px:px + pw] = scaled
+    mask = build_mask(cw, chh, dec.paste_box)
+    placed = L.plan_composition(plan, cw, chh, centroid)
+    timings["place"] = round(time.time() - t, 3)
+
+    cb("filling", 60); t = time.time()
+    canvas = prefill_mirror(canvas, dec.paste_box)
+    filled, engine = None, None
+    for fill_tier in config.SMART_FILL_ORDER:
+        try:
+            if fill_tier == "sdturbo":
+                from pipeline.fillers import sdturbo_fill
+                filled = sdturbo_fill.fill(canvas, mask)
+                engine = sdturbo_fill.ENGINE
+            else:
+                from pipeline.fillers import lama_fill
+                filled = lama_fill.fill(canvas, mask)
+                engine = lama_fill.ENGINE
+            break
+        except Exception as e:
+            log.warning("smart fill %s failed: %s", fill_tier, e)
+    if filled is None:
+        raise RuntimeError("all smart fill engines failed")
+    from pipeline import prefill
+    filled = prefill.scrub_placeholder(filled, dec.paste_box)
+    timings["fill"] = round(time.time() - t, 3)
+
+    cb("composing", 92); t = time.time()
+    import cv2 as _cv2
+    from pipeline.compose import composite, assert_region_identical
+    from pipeline import cards as C
+    from pipeline import cutout as CUT
+    result = composite(filled, scaled, dec.paste_box)
+    assert_region_identical(result, scaled, dec.paste_box)
+
+    footprints = []
+    fidelity_ok = True
+    for card, x, y, w, h in placed:
+        target = cv2_resize(card.crop, w, h)
+        if card.kind == "banner":
+            alpha = np.full((h, w), 255, np.uint8)
+        else:
+            try:
+                alpha = CUT.box_alpha(original_rgb, card.box)
+                alpha = _cv2.resize(alpha, (w, h), interpolation=_cv2.INTER_LINEAR)
+            except Exception as e:
+                log.warning("SAM2 alpha failed for %s (%s) -> solid", card.kind, e)
+                alpha = np.full((h, w), 255, np.uint8)
+        fp = C.paste_exact(result, target, alpha, x, y)
+        # fidelity: solid pixels must equal the deterministic scaled crop
+        solid = alpha >= 250
+        if not np.array_equal(result[fp[1]:fp[1] + fp[3], fp[0]:fp[0] + fp[2]][solid],
+                              target[solid]):
+            fidelity_ok = False
+        footprints.append(fp)
+    assert fidelity_ok, "graphic card fidelity violated"
+
+    from pipeline import voidcheck
+    vm = voidcheck.band_metrics(result, dec.paste_box, exclude_boxes=footprints)
+    timings["compose"] = round(time.time() - t, 3)
+    timings["total"] = round(time.time() - t_all, 3)
+
+    out_path = config.RESULTS_DIR / f"{job_id}.png"
+    _save_png(result, out_path)
+    log.info("job=%s smart cards=%d engine=%s void=%s timings=%s",
+             job_id, len(placed), engine, vm, timings)
+    return {"result_path": out_path, "paste_box": dec.paste_box,
+            "offset_reason": f"smart|{method}", "engine": f"smart({engine})",
+            "void": vm, "cards_composed": len(placed),
+            "fidelity_ok": fidelity_ok,
+            "engine_chain": [("smart/" + engine, vm["voidy"])],
+            "timings": timings}
+
+
+def prefill_mirror(canvas, paste_box):
+    from pipeline import prefill
+    return prefill.mirror_pad(canvas, paste_box)
+
+
+def cv2_resize(img, w, h):
+    import cv2
+    interp = cv2.INTER_AREA if (w * h) < img.shape[0] * img.shape[1] else cv2.INTER_CUBIC
+    return cv2.resize(img, (w, h), interpolation=interp)
+
+
 def run_smart(original_rgb: np.ndarray, ratio: str = "9:16",
               tier: str = "auto", align: str = "auto",
               job_id: str | None = None, cb=None):
@@ -123,12 +242,13 @@ def run_smart(original_rgb: np.ndarray, ratio: str = "9:16",
     No selection can ever ship dead bands.
     """
     order = {
-        "auto": ["fast", "sdturbo", "relayout"],
+        "auto": ["smart", "fast", "sdturbo", "relayout"],
+        "smart": ["smart", "sdturbo", "relayout"],
         "fast": ["fast", "sdturbo", "relayout"],
         "quality": ["quality", "sdturbo", "relayout"],
         "sdturbo": ["sdturbo", "relayout"],
         "relayout": ["relayout"],
-    }.get(tier, ["fast", "sdturbo", "relayout"])
+    }.get(tier, ["smart", "fast", "sdturbo", "relayout"])
 
     chain = []
     if cb is None:
@@ -140,6 +260,9 @@ def run_smart(original_rgb: np.ndarray, ratio: str = "9:16",
             cb("filling", 55)
         try:
             meta = run(original_rgb, ratio, t, align, job_id, cb)
+        except NoGraphicsSignal:
+            chain.append(("smart", "no-graphics"))
+            continue
         except Exception as e:
             log.warning("engine %s failed in chain: %s", t, e)
             chain.append((t, "error"))
