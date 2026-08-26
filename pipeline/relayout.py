@@ -1,4 +1,4 @@
-﻿"""Element re-layout engine: rearrange the image's own regions into a
+"""Element re-layout engine: rearrange the image's own regions into a
 vertical composition (blurred backdrop + hero crop + banner/logo cards).
 
 Deterministic, CPU-only, zero NaN risk. Used as the final fallback when
