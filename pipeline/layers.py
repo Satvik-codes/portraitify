@@ -84,6 +84,11 @@ def _detect_banners(img, hsv):
         return []
     x0 = best_end - best_run + 1
     x1 = best_end + 1
+    # extend both edges over the banner's lower-density tail (text zones)
+    while x1 < W and m[y0:y1, x1].mean() / 255.0 > 0.12:
+        x1 += 1
+    while x0 > 0 and m[y0:y1, x0 - 1].mean() / 255.0 > 0.12:
+        x0 -= 1
     x, y, w, h = x0, y0, x1 - x0, y1 - y0
     sub = m[y:y + h, x:x + w]
     if sub.mean() / 255.0 < 0.5:

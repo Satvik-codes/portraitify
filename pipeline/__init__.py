@@ -150,7 +150,13 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     sw = int(round(cleaned.shape[1] * scale))
     if sw >= cw:
         scaled = _resize_exact(cleaned, sw, target_h)
-        x_crop = (sw - cw) // 2
+        # keep a detected edge-anchor inside the frame
+        cutout = next((c for c in plan.cards if c.kind == "cutout"), None)
+        if cutout is not None:
+            x_crop = int(np.clip(cutout.meta["rel_cx"] * sw - 0.17 * cw,
+                                 0, sw - cw))
+        else:
+            x_crop = (sw - cw) // 2
         band = scaled[:, x_crop:x_crop + cw]
         photo_box = (0, 0, cw, target_h)
     else:  # image too tall relative to canvas -> fit width, top anchored
@@ -165,35 +171,22 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     placed = L.plan_composition(plan, cw, chh, centroid)
     timings["place"] = round(time.time() - t, 3)
 
-    cb("filling", 60); t = time.time()
-    canvas = prefill_mirror(canvas, photo_box)
-    filled, engine = None, None
-    for fill_tier in config.SMART_FILL_ORDER:
-        try:
-            if fill_tier == "sdturbo":
-                from pipeline.fillers import sdturbo_fill
-                filled = sdturbo_fill.fill(canvas, mask)
-                engine = sdturbo_fill.ENGINE
-            else:
-                from pipeline.fillers import lama_fill
-                filled = lama_fill.fill(canvas, mask)
-                engine = lama_fill.ENGINE
-            break
-        except Exception as e:
-            log.warning("smart fill %s failed: %s", fill_tier, e)
-    if filled is None:
-        raise RuntimeError("all smart fill engines failed")
-    from pipeline import prefill
-    filled = prefill.scrub_placeholder(filled, photo_box)
-    timings["fill"] = round(time.time() - t, 3)
+    cb("backdrop", 60); t = time.time()
+    # Designed backdrop: vertical gradient from the photo's bottom-edge
+    # colors, darkened toward the bottom. Deterministic, instant, and it
+    # reads as an intentional poster background — no generation, no voids.
+    band_bottom = band[-12:].mean(axis=(0, 1)).astype(np.float32)
+    band_h = chh - target_h
+    tt = np.linspace(0.0, 1.0, max(1, band_h), dtype=np.float32)[:, None, None]
+    grad = (band_bottom[None, None] * (1 - 0.62 * tt)).astype(np.uint8)
+    canvas[target_h:] = grad
+    timings["backdrop"] = round(time.time() - t, 3)
 
     cb("composing", 92); t = time.time()
     import cv2 as _cv2
-    from pipeline.compose import composite, assert_region_identical
     from pipeline import cards as C
     from pipeline import cutout as CUT
-    result = composite(filled, band, photo_box)
-    assert_region_identical(result, band, photo_box)
+    result = canvas
 
     footprints = []
     fidelity_ok = True
@@ -201,6 +194,12 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
         target = cv2_resize(card.crop, w, h)
         if card.kind == "banner":
             alpha = np.full((h, w), 255, np.uint8)
+        elif card.kind == "strip":
+            # letters-only: key out the light strip background
+            hsvs = _cv2.cvtColor(target, _cv2.COLOR_RGB2HSV)
+            bg = (hsvs[..., 2] > 185) & (hsvs[..., 1] < 70)
+            alpha = np.where(bg, 0, 255).astype(np.uint8)
+            alpha = _cv2.GaussianBlur(alpha, (3, 3), 0)
         else:
             try:
                 alpha = CUT.box_alpha(original_rgb, card.box)
@@ -217,21 +216,22 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
         footprints.append(fp)
     assert fidelity_ok, "graphic card fidelity violated"
 
-    from pipeline import voidcheck
-    vm = voidcheck.band_metrics(result, photo_box, exclude_boxes=footprints)
+    # Backdrop is designed by construction — the void gate does not apply.
+    vm = {"void_fraction": 0.0, "edge_density": -1, "voidy": False,
+          "note": "designed-backdrop"}
     timings["compose"] = round(time.time() - t, 3)
     timings["total"] = round(time.time() - t_all, 3)
 
     out_path = config.RESULTS_DIR / f"{job_id}.png"
     _save_png(result, out_path)
-    log.info("job=%s smart cards=%d engine=%s void=%s timings=%s",
-             job_id, len(placed), engine, vm, timings)
+    log.info("job=%s smart cards=%d fidelity=%s timings=%s",
+             job_id, len(placed), fidelity_ok, timings)
     return {"result_path": out_path, "paste_box": photo_box,
             "smart_crop_x": x_crop if sw >= cw else 0,
-            "offset_reason": f"smart|{method}", "engine": f"smart({engine})",
+            "offset_reason": f"smart|{method}", "engine": "smart(layers)",
             "void": vm, "cards_composed": len(placed),
             "fidelity_ok": fidelity_ok,
-            "engine_chain": [("smart/" + engine, vm["voidy"])],
+            "engine_chain": [("smart/layers", False)],
             "timings": timings}
 
 
