@@ -261,18 +261,22 @@ def detect_layers(img):
 
 
 def clean_photo(img, plan):
-    """Inpaint graphic holes out of the photo (MI-GAN, LaMa fallback)."""
+    """Inpaint graphic holes out of the photo (LaMa full-res; MI-GAN fallback).
+
+    LaMa first: large removed regions (banners/strips) need structure-aware
+    filling at full resolution — MI-GAN's fixed 512px pass leaves ghosts.
+    """
     if not plan.found:
         return img
     from pipeline.fillers import lama_fill
     try:
+        filled = lama_fill.fill(img, plan.graphic_union)
+        engine = "big-lama"
+    except Exception as e:
+        log.warning("lama cleanup failed (%s) -> migan", e)
         from pipeline.fillers import migan_fill
         filled = migan_fill.fill(img, plan.graphic_union)
         engine = "migan"
-    except Exception as e:
-        log.warning("migan cleanup failed (%s) -> lama", e)
-        filled = lama_fill.fill(img, plan.graphic_union)
-        engine = "big-lama"
     keep = plan.graphic_union < 128
     filled[keep] = img[keep]
     log.info("photo cleaned via %s", engine)

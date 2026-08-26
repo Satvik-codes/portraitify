@@ -199,6 +199,7 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
             hsvs = _cv2.cvtColor(target, _cv2.COLOR_RGB2HSV)
             bg = (hsvs[..., 2] > 185) & (hsvs[..., 1] < 70)
             alpha = np.where(bg, 0, 255).astype(np.uint8)
+            alpha = _cv2.erode(alpha, np.ones((3, 3), np.uint8))  # kill edge slivers
             alpha = _cv2.GaussianBlur(alpha, (3, 3), 0)
         else:
             try:
