@@ -214,12 +214,30 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
         else:
             try:
                 alpha = _pick_cutout_alpha(CUT, original_rgb, card, w, h)
-                # halo key only when his source backdrop was near-white —
-                # on gray/astro backdrops the same key eats white clothing
+                # halo cleanup ONLY on the mask's outer rim band: light-gray
+                # JPEG mush around white-backdrop anchors would otherwise
+                # glare on the red gradient. Interior pixels — shirts,
+                # skin, everything — keep their exact source colors.
                 if card.meta.get("backdrop_white"):
+                    # the source strokes white-backdrop anchors with a dark
+                    # keyline — erode past it; drop floating backdrop
+                    # islands (stray patches between arm gaps)
+                    alpha = _cv2.erode(alpha, np.ones((9, 9), np.uint8))
+                    am = alpha > 128
+                    n_, lab_, st_, _ = _cv2.connectedComponentsWithStats(
+                        am.astype(np.uint8), 8)
+                    if n_ > 1:
+                        j_ = 1 + int(np.argmax(st_[1:, _cv2.CC_STAT_AREA]))
+                        main_a = float(st_[j_, _cv2.CC_STAT_AREA])
+                        for i_ in range(1, n_):
+                            if (i_ != j_ and
+                                    st_[i_, _cv2.CC_STAT_AREA] < 0.04 * main_a):
+                                alpha[lab_ == i_] = 0
                     hsvt = _cv2.cvtColor(target, _cv2.COLOR_RGB2HSV)
-                    white = (hsvt[..., 2] > 205) & (hsvt[..., 1] < 55)
-                    alpha = np.where(white, 0, alpha)
+                    white = (hsvt[..., 2] > 165) & (hsvt[..., 1] < 85)
+                    core = _cv2.erode(alpha, np.ones((7, 7), np.uint8))
+                    rim = (alpha > 0) & (core == 0)
+                    alpha = np.where(rim & white, 0, alpha)
                     alpha = _cv2.GaussianBlur(alpha, (3, 3), 0)
                 # soften ground-out bodies (frame edge / strip line)
                 if card.meta.get("bottom_cut", True):

@@ -363,12 +363,18 @@ def _detect_cutouts(img, gray, photo_rect=None, strip_box=None):
     # this mask whenever the SAM2 result fails coverage sanity.
     yolo_alpha = None
     if mask_best is not None:
-        wb_full, hb_full = x2_pre - x1, y2_pre - y1
+        # proto mask spans the full frame at model resolution: crop the box
+        # region (scaled) FIRST, then resize — resizing the uncropped proto
+        # squeezes the subject into a corner of the card
+        ph, pw = mask_best.shape[:2]
+        sx, sy = pw / W, ph / H
+        c0, c1 = int(x1 * sx), int(np.ceil((x1 + w) * sx))
+        r0, r1 = int(y1 * sy), int(np.ceil((y1 + h) * sy))
         try:
-            rm = cv2.resize(mask_best.astype(np.float32),
-                            (max(1, wb_full), max(1, hb_full)))
+            rm = mask_best[max(0, r0):max(1, r1), max(0, c0):max(1, c1)]
+            rm = cv2.resize(rm.astype(np.float32), (max(1, w), max(1, h)))
             ya = (rm > 0.5).astype(np.uint8) * 255
-            yolo_alpha = np.ascontiguousarray(ya[:h])  # bottom-trim aware
+            yolo_alpha = np.ascontiguousarray(ya)
         except Exception as e:
             log.warning("yolo alpha build failed: %s", e)
     meta = {"rel_w": w / W, "rel_cx": (x1 + w / 2) / W,
@@ -595,17 +601,19 @@ def plan_composition(plan, canvas_w, canvas_h, centroid_y):
                        else canvas_h - sh_ - 36)
 
     if cutout is not None:
-        # centered foreground hero: large, lower body set INTO the strip
-        # (the 2nd-from-bottom plate) so he reads as presenting over the
-        # subheading, matching the editorial afters.
-        w = int(0.48 * canvas_w)
-        h = int(cutout.crop.shape[0] * w / cutout.crop.shape[1])
-        if h > 0.72 * canvas_h:
-            h = int(0.72 * canvas_h)
-            w = int(cutout.crop.shape[1] * h / cutout.crop.shape[0])
+        # centered foreground hero, sized by explicit vertical targets:
+        # top lands at ~half the photo band, bottom tucks just behind the
+        # strip top — reads as double-tall versus the old side placement.
+        strip_top = y_strip if y_strip is not None else band_bottom
+        visible = strip_top - int(0.46 * band_bottom)
+        h = int(visible / 0.92)
+        h = min(h, int(0.80 * canvas_h))
+        w = int(cutout.crop.shape[1] * h / cutout.crop.shape[0])
+        if w > int(0.66 * canvas_w):
+            w = int(0.66 * canvas_w)
+            h = int(cutout.crop.shape[0] * w / cutout.crop.shape[1])
         x = (canvas_w - w) // 2
-        ground = (y_strip + int(0.40 * h)) if y_strip else (band_bottom + 12)
-        y = max(8, int(ground - h))
+        y = max(8, strip_top + int(0.08 * h) - h)
         placed.append((cutout, x, y, w, h))
 
     if banner is not None:

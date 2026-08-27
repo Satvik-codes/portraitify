@@ -1,5 +1,6 @@
 """SAM2 box-prompted alpha cutouts (anchors, logo strips, badges)."""
 import logging
+import os
 
 import numpy as np
 import cv2
@@ -17,9 +18,17 @@ def _get_predictor():
     if _predictor is None:
         from sam2.build_sam import build_sam2_hf
         from sam2.sam2_image_predictor import SAM2ImagePredictor
-        model = build_sam2_hf(SAM2_ID, device=config.device())
-        _predictor = SAM2ImagePredictor(model, mask_threshold=0.0,
-                                        max_hole_area=8.0, max_sprinkle_area=0.0)
+        # SAM2 runs on CPU by default: on this machine, once YOLO/LaMa have
+        # used the GPU, later CUDA convolutions silently corrupt SAM2's
+        # masks into half-body slivers (verified A/B; matches the known
+        # fp16-NaN fault of this GPU). CPU output is bit-identical quality
+        # at ~2-4s/image. Opt back into CUDA with SAM2_DEVICE=cuda.
+        device = os.environ.get("SAM2_DEVICE", "cpu")
+        model = build_sam2_hf(SAM2_ID, device=device)
+        # NO max_hole_area/max_sprinkle_area here: those activate sam2's
+        # optional post-processing, which hard-crashes without the compiled
+        # _C extension — and the crash path hands back MANGLED masks.
+        _predictor = SAM2ImagePredictor(model, mask_threshold=0.0)
     return _predictor
 
 
@@ -38,7 +47,7 @@ def box_alpha(img_rgb: np.ndarray, box: tuple, feather: int = 3) -> np.ndarray:
             box=np.array([x, y, x + w, y + h], dtype=np.float32),
             multimask_output=True)
     m = masks[int(np.argmax(scores))]
-    return _mask_to_alpha(m, w, h, feather)
+    return _mask_to_alpha(m, box, feather)
 
 
 def box_alpha_multi(img_rgb: np.ndarray, box: tuple,
@@ -59,15 +68,19 @@ def box_alpha_multi(img_rgb: np.ndarray, box: tuple,
     best = masks[int(np.argmax(scores))]
     acc = None
     for m in masks:
-        f = cv2.resize(m.astype(np.float32), (w, h))
+        f = cv2.resize(m[y:y + h, x:x + w].astype(np.float32), (w, h))
         acc = f if acc is None else acc + f
     union_a = ((acc > 0.3).astype(np.uint8)) * 255
     union_a = cv2.GaussianBlur(union_a, ((feather | 1), (feather | 1)), 0)
-    return _mask_to_alpha(best, w, h, feather), union_a
+    return _mask_to_alpha(best, box, feather), union_a
 
 
-def _mask_to_alpha(m, w, h, feather):
-    f = cv2.resize(m.astype(np.float32), (w, h))
+def _mask_to_alpha(m, box, feather):
+    """masks arrive at FULL image resolution — crop to the box FIRST,
+    then resize. Resizing the uncropped frame squeezes the subject into a
+    corner of the card (the long-standing 'tiny anchor' bug)."""
+    x, y, w, h = [int(v) for v in box]
+    f = cv2.resize(m[y:y + h, x:x + w].astype(np.float32), (w, h))
     a = (f > 0).astype(np.uint8) * 255
     k = feather | 1
     a = cv2.GaussianBlur(a, (k, k), 0)
