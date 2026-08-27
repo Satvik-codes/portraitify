@@ -136,6 +136,26 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
 
     cb("cleaning", 15); t = time.time()
     cleaned = L.clean_photo(original_rgb, plan)
+    # Crop to the dominant photo rect when found, then drop the recomposed
+    # anchor's home columns entirely: their inpainted patch smears on
+    # textured backdrops and carries no story value. Mid-frame anchors are
+    # spared (their backdrop IS the scene); a minimum band stays guaranteed.
+    _co = next((c for c in plan.cards if c.kind == "cutout"), None)
+    if getattr(plan, "photo_rect", None):
+        rx, ry, rw, rh = plan.photo_rect
+        cleaned = cleaned[ry:ry + rh, rx:rx + rw]
+    if _co is not None:
+        _x0, _y0, _w0, _h0 = _co.box
+        Ws = cleaned.shape[1]
+        pad = int(0.02 * Ws)
+        if (_x0 + _w0 / 2) < 0.55 * Ws and _x0 < 0.30 * Ws:
+            sx = _x0 + _w0 + pad
+            if Ws - sx >= 320:
+                cleaned = cleaned[:, sx:]
+        elif (_x0 + _w0 / 2) > 0.45 * Ws and (_x0 + _w0) > 0.70 * Ws:
+            ex = max(320, _x0 - pad)
+            if ex >= 320:
+                cleaned = cleaned[:, :ex]
     timings["clean"] = round(time.time() - t, 3)
 
     cb("placing", 25); t = time.time()
@@ -150,13 +170,7 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     sw = int(round(cleaned.shape[1] * scale))
     if sw >= cw:
         scaled = _resize_exact(cleaned, sw, target_h)
-        # keep a detected edge-anchor inside the frame
-        cutout = next((c for c in plan.cards if c.kind == "cutout"), None)
-        if cutout is not None:
-            x_crop = int(np.clip(cutout.meta["rel_cx"] * sw - 0.17 * cw,
-                                 0, sw - cw))
-        else:
-            x_crop = (sw - cw) // 2
+        x_crop = (sw - cw) // 2
         band = scaled[:, x_crop:x_crop + cw]
         photo_box = (0, 0, cw, target_h)
     else:  # image too tall relative to canvas -> fit width, top anchored
@@ -192,21 +206,29 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     fidelity_ok = True
     for card, x, y, w, h in placed:
         target = cv2_resize(card.crop, w, h)
-        if card.kind == "banner":
+        if card.kind == "banner" or card.kind == "strip":
+            # solid plate: the strip's own white design reads cleanly on the
+            # dark backdrop; keying metallic letters to transparency turns
+            # them black (dark halos dominate on dark backgrounds)
             alpha = np.full((h, w), 255, np.uint8)
-        elif card.kind == "strip":
-            # letters-only: key out the light strip background
-            hsvs = _cv2.cvtColor(target, _cv2.COLOR_RGB2HSV)
-            bg = (hsvs[..., 2] > 185) & (hsvs[..., 1] < 70)
-            alpha = np.where(bg, 0, 255).astype(np.uint8)
-            alpha = _cv2.erode(alpha, np.ones((3, 3), np.uint8))  # kill edge slivers
-            alpha = _cv2.GaussianBlur(alpha, (3, 3), 0)
         else:
             try:
-                alpha = CUT.box_alpha(original_rgb, card.box)
-                alpha = _cv2.resize(alpha, (w, h), interpolation=_cv2.INTER_LINEAR)
+                alpha = _pick_cutout_alpha(CUT, original_rgb, card, w, h)
+                # halo key only when his source backdrop was near-white —
+                # on gray/astro backdrops the same key eats white clothing
+                if card.meta.get("backdrop_white"):
+                    hsvt = _cv2.cvtColor(target, _cv2.COLOR_RGB2HSV)
+                    white = (hsvt[..., 2] > 205) & (hsvt[..., 1] < 55)
+                    alpha = np.where(white, 0, alpha)
+                    alpha = _cv2.GaussianBlur(alpha, (3, 3), 0)
+                # soften ground-out bodies (frame edge / strip line)
+                if card.meta.get("bottom_cut", True):
+                    fh2 = max(1, int(0.12 * h))
+                    fade = np.ones(h, np.float32)
+                    fade[-fh2:] = np.linspace(1.0, 0.0, fh2, dtype=np.float32)
+                    alpha = (alpha.astype(np.float32) * fade[:, None]).astype(np.uint8)
             except Exception as e:
-                log.warning("SAM2 alpha failed for %s (%s) -> solid", card.kind, e)
+                log.warning("cutout alpha failed for %s (%s) -> solid", card.kind, e)
                 alpha = np.full((h, w), 255, np.uint8)
         fp = C.paste_exact(result, target, alpha, x, y)
         # fidelity: solid pixels must equal the deterministic scaled crop
@@ -234,6 +256,75 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
             "fidelity_ok": fidelity_ok,
             "engine_chain": [("smart/layers", False)],
             "timings": timings}
+
+
+def _alpha_ok(a, w, h, cov_lo=0.10):
+    """A plausible person mask: non-trivial coverage AND spans the box.
+
+    Sliver masks (a face with no torso) pass coverage alone — span gates
+    catch them; near-solid rectangles (busy fill fallback) fail cov_hi.
+    """
+    am = a > 128
+    ys, xs = np.where(am)
+    if not xs.size:
+        return False
+    cov = float(am.mean())
+    bw_a = int(xs.max() - xs.min() + 1)
+    bh_a = int(ys.max() - ys.min() + 1)
+    return (cov_lo <= cov <= 0.80 and
+            bw_a >= 0.45 * w and bh_a >= 0.50 * h)
+
+
+def _pick_cutout_alpha(CUT, img_rgb, card, w, h):
+    """Ranked alpha ladder; first sane candidate wins, models degrade into
+    geometry before anything ever ships broken."""
+    import cv2
+    tried = []
+    try:
+        sam, union = CUT.box_alpha_multi(img_rgb, card.box)
+        for tag, a in (("sam", sam), ("union", union)):
+            ar = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+            if _alpha_ok(ar, w, h):
+                log.info("cutout alpha via %s", tag)
+                return ar
+            tried.append(tag)
+    except Exception as e:
+        log.warning("SAM2 ladder failed (%s)", e)
+    ym = card.meta.get("yolo_alpha")
+    if ym is not None:
+        ar = cv2.resize(np.asarray(ym), (w, h),
+                        interpolation=cv2.INTER_LINEAR)
+        if _alpha_ok(ar, w, h):
+            log.info("cutout alpha via yolo silhouette")
+            return ar
+        tried.append("yolo")
+    try:
+        ar = CUT.box_alpha_fill(img_rgb, card.box)
+        ar = cv2.resize(ar, (w, h), interpolation=cv2.INTER_LINEAR)
+        if _alpha_ok(ar, w, h, cov_lo=0.05):
+            log.warning("cutout alpha via geometric fill (all model masks "
+                        "degenerate: %s)", ",".join(tried) or "none")
+            return ar
+        log.warning("fill fallback failed sanity (cov=%.2f)",
+                    float((ar > 128).mean()))
+    except Exception as e:
+        log.warning("fill fallback failed (%s)", e)
+    try:
+        # near-solid fills mean busy art beat the color model — GrabCut's
+        # layout priors are the last content-aware rescue before the floor
+        ar = CUT.box_alpha_grabcut(img_rgb, card.box)
+        ar = cv2.resize(ar, (w, h), interpolation=cv2.INTER_LINEAR)
+        if _alpha_ok(ar, w, h, cov_lo=0.05):
+            log.warning("cutout alpha via grabcut")
+            return ar
+    except Exception as e:
+        log.warning("grabcut fallback failed (%s)", e)
+    # absolute floor: feathered solid of the detector box — an honest card
+    # beats a hollow one
+    a = np.full((h, w), 255, np.uint8)
+    k = 9 | 1
+    a[:3] = a[-3:] = a[:, :3] = a[:, -3:] = 0
+    return cv2.GaussianBlur(a, (k, k), 0)
 
 
 def prefill_mirror(canvas, paste_box):
@@ -284,8 +375,52 @@ def run_smart(original_rgb: np.ndarray, ratio: str = "9:16",
         chain.append((t, meta["void"]["voidy"]))
         if not meta["void"]["voidy"]:
             break
+    if meta is None or meta["void"]["voidy"]:
+        # no-voids guarantee: the deterministic fit+gradient compose cannot
+        # hallucinate or empty out — it is the floor every job lands on.
+        log.warning("all engines failed/voidy -> terminal fit compose")
+        chain.append(("terminal-fit", False))
+        meta = _terminal_fit_compose(original_rgb, ratio, job_id)
     meta["engine_chain"] = chain
     return meta
+
+
+def _terminal_fit_compose(original_rgb: np.ndarray, ratio: str,
+                          job_id: str) -> dict:
+    """Deterministic last resort: center-fit band + color-sampled gradient.
+
+    Void-free by construction — no diffusion, no gates that can reject.
+    """
+    t0 = time.time()
+    cw, chh = config.CANVAS_SIZES[ratio]
+    target_h = max(64, int(config.SMART_PHOTO_HEIGHT * chh))
+    scale = target_h / original_rgb.shape[0]
+    sw = int(round(original_rgb.shape[1] * scale))
+    if sw >= cw:
+        scaled = _resize_exact(original_rgb, sw, target_h)
+        x0 = (sw - cw) // 2
+        band = scaled[:, x0:x0 + cw]
+        paste_box = (0, 0, cw, target_h)
+    else:
+        fh = min(chh - 64,
+                 int(round(original_rgb.shape[0] * cw / original_rgb.shape[1])))
+        band = _resize_exact(original_rgb, cw, fh)
+        paste_box = (0, 0, cw, fh)
+        target_h = fh
+    canvas = np.full((chh, cw, 3), 127, dtype=np.uint8)
+    canvas[0:target_h] = band
+    bb = band[-12:].mean(axis=(0, 1)).astype(np.float32)
+    tt = np.linspace(0.0, 1.0, max(1, chh - target_h),
+                     dtype=np.float32)[:, None, None]
+    canvas[target_h:] = (bb[None, None] * (1 - 0.62 * tt)).astype(np.uint8)
+    out_path = config.RESULTS_DIR / f"{job_id}.png"
+    _save_png(canvas, out_path)
+    vm = {"void_fraction": 0.0, "edge_density": -1, "voidy": False,
+          "note": "terminal-fit"}
+    return {"result_path": out_path, "paste_box": paste_box,
+            "offset_reason": "terminal-fit", "engine": "terminal-fit",
+            "void": vm, "cards_composed": 0, "fidelity_ok": True,
+            "timings": {"total": round(time.time() - t0, 2)}}
 
 
 # --- helpers ------------------------------------------------------------------

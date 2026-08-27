@@ -53,10 +53,12 @@ LAYER_BANNER_SAT = 140
 LAYER_BANNER_VAL = 90
 LAYER_STRIP_LIGHT_V = 200
 LAYER_STRIP_LIGHT_S = 60
-LAYER_STRIP_EDGE_DENSITY = 0.08
+# 0.08 amputated flat-serif plates (before1); text styling swings this metric
+# wildly while area/cy/box-density gates carry the anti-junk load
+LAYER_STRIP_EDGE_DENSITY = 0.055
 LAYER_CORNER_LOGO_AREA = (0.0015, 0.03)
 LAYER_CUTOUT_RING_STD = 14
-SMART_PHOTO_HEIGHT = 0.72
+SMART_PHOTO_HEIGHT = 0.60  # wider field of view — crowd reads as anchor background
 SMART_FILL_ORDER = ("sdturbo", "lama")
 CARD_FEATHER_PX = 4
 CARD_SHADOW_ALPHA = 90

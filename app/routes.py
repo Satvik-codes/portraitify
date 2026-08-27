@@ -32,7 +32,7 @@ def _sniff_ext(head: bytes) -> str | None:
 @router.post("/convert")
 async def convert(file: UploadFile = File(...),
                   ratio: str = Form("9:16"),
-                  tier: str = Form("fast"),
+                  tier: str = Form("auto"),
                   align: str = Form("auto")):
     if ratio not in config.VALID_RATIOS:
         return _err(400, "bad_request", f"ratio must be one of {config.VALID_RATIOS}")
