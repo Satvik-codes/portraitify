@@ -595,23 +595,16 @@ def plan_composition(plan, canvas_w, canvas_h, centroid_y):
                        else canvas_h - sh_ - 36)
 
     if cutout is not None:
-        # large foreground presence: anchored to the side of the frame he
-        # came from; feet bridging into the graphics band like afters do.
-        w = int((0.42 if (cutout.crop.shape[0] / max(1, cutout.crop.shape[1])) < 1.25
-                 else 0.40) * canvas_w)
+        # centered foreground hero: large, lower body set INTO the strip
+        # (the 2nd-from-bottom plate) so he reads as presenting over the
+        # subheading, matching the editorial afters.
+        w = int(0.48 * canvas_w)
         h = int(cutout.crop.shape[0] * w / cutout.crop.shape[1])
         if h > 0.72 * canvas_h:
             h = int(0.72 * canvas_h)
             w = int(cutout.crop.shape[1] * h / cutout.crop.shape[0])
-        cx = cutout.meta.get("rel_cx", 0.25)
-        if abs(cx - 0.5) < 0.15:            # source was centered -> center
-            x = (canvas_w - w) // 2
-        elif cx < 0.5:
-            x = int(0.09 * canvas_w)
-        else:
-            x = canvas_w - w - int(0.09 * canvas_w)
-        ground = (y_strip + int(0.30 * h)) if y_strip else \
-            (band_bottom + 12)
+        x = (canvas_w - w) // 2
+        ground = (y_strip + int(0.40 * h)) if y_strip else (band_bottom + 12)
         y = max(8, int(ground - h))
         placed.append((cutout, x, y, w, h))
 
