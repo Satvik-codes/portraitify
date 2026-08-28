@@ -206,7 +206,14 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     fidelity_ok = True
     for card, x, y, w, h in placed:
         target = cv2_resize(card.crop, w, h)
-        if card.kind == "banner" or card.kind == "strip":
+        if card.kind == "headline":
+            # floating text block: paste only glyph pixels so it sits on
+            # any backdrop with zero color modification
+            if card.alpha is not None:
+                alpha = cv2_resize(card.alpha, w, h)
+            else:
+                alpha = np.full((h, w), 255, np.uint8)
+        elif card.kind == "banner" or card.kind == "strip":
             # solid plate: the strip's own white design reads cleanly on the
             # dark backdrop; keying metallic letters to transparency turns
             # them black (dark halos dominate on dark backgrounds)
