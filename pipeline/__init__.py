@@ -133,6 +133,11 @@ def _run_smart_layered(original_rgb, ratio, align, job_id, cb, cw, chh):
     timings["detect"] = round(time.time() - t, 3)
     if not plan.found:
         raise NoGraphicsSignal("no graphic layers detected")
+    # semantic gate: recomposition needs at least one meaningful layer (a
+    # person or a text block). Plates alone on a plain photo/product frame
+    # are false positives - let the chain fall through to simpler engines.
+    if not any(c.kind in ("cutout", "headline") for c in plan.cards):
+        raise NoGraphicsSignal("only plate-like blobs, no person/text")
 
     cb("cleaning", 15); t = time.time()
     cleaned = L.clean_photo(original_rgb, plan)
